@@ -1,5 +1,5 @@
 import os
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # Allow fallback for unsupported ops on MPS
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 import glob
 import time
@@ -34,13 +34,12 @@ from monai.data import (
 )
 from monai.inferers import sliding_window_inference
 from monai.metrics import DiceMetric
-from monai.networks.nets.swin_unetr import SwinTransformer  # Import from swin_unetr
+from monai.networks.nets.swin_unetr import SwinTransformer
 from monai.losses import DiceLoss
 from monai.utils.enums import MetricReduction
 
 # -------------------------------------------------------------------------
-# 1) DEVICE SETUP
-# -------------------------------------------------------------------------
+#device setup
 def get_mps_device():
     """Try to use Apple's MPS on M1/M2 Mac."""
     if torch.backends.mps.is_available():
@@ -52,8 +51,7 @@ print_config()
 print(f"Using device: {device}")
 
 # -------------------------------------------------------------------------
-# 2) DATA DISCOVERY
-# -------------------------------------------------------------------------
+# data finder
 data_dir = "/Users/adityaranjan/Documents/CuSV/data/BraTS2021_Training_Data"
 save_dir = "/Users/adityaranjan/Documents/CuSV"
 
@@ -84,8 +82,7 @@ val_files   = all_data[-n_val:]
 print(f"Training set: {len(train_files)} cases, Validation set: {len(val_files)} cases")
 
 # -------------------------------------------------------------------------
-# 3) TRANSFORMS & DATALOADERS
-# -------------------------------------------------------------------------
+# transform
 roi_size = (128, 128, 128)
 
 train_transforms = Compose([
@@ -110,7 +107,7 @@ val_transforms = Compose([
     EnsureTyped(keys=["image", "label"]),
 ])
 
-batch_size = 1  # MPS has limited memory for large 3D volumes
+batch_size = 1  # mps limited for 3d volume
 train_ds = Dataset(data=train_files, transform=train_transforms)
 val_ds   = Dataset(data=val_files, transform=val_transforms)
 
@@ -120,14 +117,12 @@ val_loader   = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=0)
 print(f"Train Loader: {len(train_loader)} batches, Val Loader: {len(val_loader)} batches")
 
 # -------------------------------------------------------------------------
-# 4) DEFINE THE FALLBACK MODEL
-# -------------------------------------------------------------------------
+# fallback model
 class SwinUNETRFallback(nn.Module):
     """
-    A fallback model that uses MONAI's SwinTransformer encoder.
-    The encoder returns a list of feature maps; we use the last one
-    (the most downsampled), then upsample it by the appropriate factor
-    to match the ground truth resolution (128³), and apply a 1x1x1 conv.
+    a fallback model uses MONAI SwinTransformer encoder
+    encoder returnslist of feature maps; use the last one
+    to match ground truth resolution (128³), and apply 1x1x1 conv.
     """
     def __init__(
         self,
@@ -153,33 +148,29 @@ class SwinUNETRFallback(nn.Module):
             use_checkpoint=use_checkpoint,
             spatial_dims=spatial_dims,
         )
-        # Expecting the encoder to return a list; use the last element.
+        # returns list; use last element
         self.out_conv = nn.Conv3d(feature_size * 16, out_channels, kernel_size=1)
 
     def forward(self, x):
         feats = self.encoder(x)
         if isinstance(feats, (list, tuple)):
-            feats = feats[-1]  # Use the last feature map.
-        # Now feats is expected to be [B, feature_size*16, 32, 32, 32]
-        # To upscale 32 -> 128, we need scale_factor=4.
+            feats = feats[-1]  # last feature map use
         up_feats = F.interpolate(feats, scale_factor=64, mode="trilinear", align_corners=True)
         logits = self.out_conv(up_feats)
         return logits
 
 # -------------------------------------------------------------------------
-# 5) CREATE THE MODEL
-# -------------------------------------------------------------------------
+# create/define model
 model = SwinUNETRFallback(
     img_size=roi_size,
     in_channels=4,
     out_channels=3,
-    feature_size=24,  # Adjust feature size as needed.
+    feature_size=24,  # adjust as needed
     use_checkpoint=False,
 ).to(device)
 
 # -------------------------------------------------------------------------
-# 6) LOSS, METRICS, & INFERENCE FUNCTION
-# -------------------------------------------------------------------------
+# dice loss and inference function
 dice_loss = DiceLoss(to_onehot_y=False, sigmoid=True)
 post_sigmoid = Activations(sigmoid=True)
 post_pred = AsDiscrete(threshold=0.5)
@@ -197,19 +188,17 @@ def inference_sliding_window(batch_data):
         roi_size=roi_size,
         sw_batch_size=2,
         predictor=model,
-        overlap=0.5,
+        overlap=0.35,
     )
 
 # -------------------------------------------------------------------------
-# 7) OPTIMIZER & SCHEDULER
-# -------------------------------------------------------------------------
+# optimizer/scheduler
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
 
 # -------------------------------------------------------------------------
-# 8) TRAINING LOOP
-# -------------------------------------------------------------------------
-max_epochs = 10
+# training loop
+max_epochs = 5
 best_metric = 0.0
 best_metric_epoch = -1
 
@@ -252,8 +241,7 @@ for epoch in range(max_epochs):
 print(f"\nTraining complete! Best validation Dice: {best_metric:.4f} at epoch {best_metric_epoch}")
 
 # -------------------------------------------------------------------------
-# 9) INFERENCE ON A SINGLE CASE & VISUALIZATION
-# -------------------------------------------------------------------------
+# inference single case and visualize
 test_case = val_files[0]
 print("Testing on case:", test_case["image"])
 
